@@ -1,0 +1,16 @@
+fastapi<0.117,>=0.116
+uvicorn[standard]<0.36,>=0.35
+sqlalchemy<2.1,>=2.0
+pydantic<2.12,>=2.11
+pydantic-settings<2.9,>=2.8
+numpy<3.0,>=2.2
+
+[dev]
+pytest<8.5,>=8.4
+httpx<0.29,>=0.28
+ruff<0.13,>=0.12
+
+[science]
+lightkurve<2.6,>=2.5
+torch<3.0,>=2.6
+psutil<6.2,>=6.1

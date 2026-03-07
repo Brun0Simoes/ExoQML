@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exoqml-backend"
+version = "0.1.0"
+description = "ExoQML backend: FastAPI + light-curve processing + explainable inference."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "fastapi>=0.116,<0.117",
+  "uvicorn[standard]>=0.35,<0.36",
+  "sqlalchemy>=2.0,<2.1",
+  "pydantic>=2.11,<2.12",
+  "pydantic-settings>=2.8,<2.9",
+  "numpy>=2.2,<3.0",
+]
+
+[project.optional-dependencies]
+science = [
+  "lightkurve>=2.5,<2.6",
+  "torch>=2.6,<3.0",
+  "psutil>=6.1,<6.2",
+]
+dev = [
+  "pytest>=8.4,<8.5",
+  "httpx>=0.28,<0.29",
+  "ruff>=0.12,<0.13",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["exoqml*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,70 @@
+Metadata-Version: 2.4
+Name: exoqml-backend
+Version: 0.1.0
+Summary: ExoQML backend: FastAPI + light-curve processing + explainable inference.
+Requires-Python: <3.13,>=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi<0.117,>=0.116
+Requires-Dist: uvicorn[standard]<0.36,>=0.35
+Requires-Dist: sqlalchemy<2.1,>=2.0
+Requires-Dist: pydantic<2.12,>=2.11
+Requires-Dist: pydantic-settings<2.9,>=2.8
+Requires-Dist: numpy<3.0,>=2.2
+Provides-Extra: science
+Requires-Dist: lightkurve<2.6,>=2.5; extra == "science"
+Requires-Dist: torch<3.0,>=2.6; extra == "science"
+Requires-Dist: psutil<6.2,>=6.1; extra == "science"
+Provides-Extra: dev
+Requires-Dist: pytest<8.5,>=8.4; extra == "dev"
+Requires-Dist: httpx<0.29,>=0.28; extra == "dev"
+Requires-Dist: ruff<0.13,>=0.12; extra == "dev"
+
+# ExoQML Backend
+
+FastAPI backend for ExoQML MVP:
+
+- Target lookup (`TIC`, `KIC`, or name)
+- Light curve acquisition (`lightkurve`, with resilient fallback)
+- Standard preprocessing
+- BLS-like classical baseline
+- Classical inference + temporal relevance map
+- Analysis history in SQLite
+- JSON/CSV export
+
+## Local run
+
+```powershell
+uv venv --python 3.11 .venv
+.\.venv\Scripts\python -m pip install -e .[dev]
+.\.venv\Scripts\uvicorn exoqml.main:app --reload --port 8000
+```
+
+Optional science stack:
+
+```powershell
+.\.venv\Scripts\python -m pip install -e .[science]
+```
+
+## Aggressive training
+
+```powershell
+cd ..
+.\scripts\train_max.ps1 -Epochs 40 -ReserveFreeGb 60 -DiskUtilization 0.9
+```
+
+Auto-resume artifacts:
+
+- `data/train_max/manifest.csv` (ingestion progress)
+- `data/train_max/current_run.json` (active run pointer)
+- `data/train_max/runs/<run_id>/latest_model.pt` (resume checkpoint)
+- `data/train_max/runs/<run_id>/best_model.pt` (best validation checkpoint)
+
+## Environment variables
+
+`EXOQML_DATABASE_URL`
+`EXOQML_CORS_ORIGINS`
+`EXOQML_MAX_POINTS`
+`EXOQML_ENABLE_QML`
+`EXOQML_ALLOW_SYNTHETIC_FALLBACK`
+`EXOQML_MODEL_PATH`
+`EXOQML_DEVICE`
