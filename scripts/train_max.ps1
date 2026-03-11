@@ -10,6 +10,15 @@ param(
     [int]$MinValSamples = 32,
     [int]$MinTestSamples = 32,
     [string]$Device = "auto",
+    [switch]$DisableViewCache,
+    [switch]$DisableHardNegativeMining,
+    [int]$HardNegativeStartEpoch = 6,
+    [int]$HardNegativeRefreshEpochs = 4,
+    [double]$HardNegativeTopFraction = 0.15,
+    [double]$HardNegativeMinScore = 0.55,
+    [int]$HardNegativeMinCount = 512,
+    [int]$HardNegativeMaxCount = 4096,
+    [double]$HardNegativeWeight = 2.5,
     [switch]$NoResume,
     [switch]$EnableCompile,
     [switch]$SkipIngestion
@@ -36,12 +45,21 @@ $argsList = @(
     "--min-train-samples", "$MinTrainSamples",
     "--min-val-samples", "$MinValSamples",
     "--min-test-samples", "$MinTestSamples",
-    "--device", "$Device"
+    "--device", "$Device",
+    "--hard-negative-start-epoch", "$HardNegativeStartEpoch",
+    "--hard-negative-refresh-epochs", "$HardNegativeRefreshEpochs",
+    "--hard-negative-top-fraction", "$HardNegativeTopFraction",
+    "--hard-negative-min-score", "$HardNegativeMinScore",
+    "--hard-negative-min-count", "$HardNegativeMinCount",
+    "--hard-negative-max-count", "$HardNegativeMaxCount",
+    "--hard-negative-weight", "$HardNegativeWeight"
 )
 
 if ($MaxStars -gt 0) { $argsList += @("--max-stars", "$MaxStars") }
 if ($BatchSize -gt 0) { $argsList += @("--batch-size", "$BatchSize") }
 if ($NumWorkers -gt 0) { $argsList += @("--num-workers", "$NumWorkers") }
+if ($DisableViewCache) { $argsList += "--disable-view-cache" }
+if ($DisableHardNegativeMining) { $argsList += "--disable-hard-negative-mining" }
 if ($NoResume) { $argsList += "--no-resume" }
 if ($EnableCompile) { $argsList += "--enable-compile" }
 if ($SkipIngestion) { $argsList += "--skip-ingestion" }

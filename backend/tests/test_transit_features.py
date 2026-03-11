@@ -1,5 +1,6 @@
 import numpy as np
 
+from exoqml.training.max_train import TCERow, select_hard_negative_indices, summarize_tce_rows
 from exoqml.training.model import TransitMultiViewNet
 from exoqml.transit_features import (
     GLOBAL_VIEW_BINS,
@@ -52,3 +53,72 @@ def test_multiview_model_forward_shape() -> None:
     )
 
     assert tuple(output.shape) == (4, 1)
+
+
+def test_summarize_tce_rows_counts_mixed_label_stars_once() -> None:
+    rows = [
+        TCERow(
+            tce_id="100_1",
+            star_id="100",
+            label=1,
+            label_name="PC",
+            split="train",
+            period=10.0,
+            duration_hours=4.0,
+            epoch=1.0,
+            depth_ppm=1500.0,
+            model_snr=12.0,
+        ),
+        TCERow(
+            tce_id="100_2",
+            star_id="100",
+            label=0,
+            label_name="AFP",
+            split="train",
+            period=20.0,
+            duration_hours=6.0,
+            epoch=2.0,
+            depth_ppm=200.0,
+            model_snr=5.0,
+        ),
+        TCERow(
+            tce_id="200_1",
+            star_id="200",
+            label=0,
+            label_name="NTP",
+            split="test",
+            period=30.0,
+            duration_hours=3.0,
+            epoch=3.0,
+            depth_ppm=100.0,
+            model_snr=4.0,
+        ),
+    ]
+
+    summary = summarize_tce_rows(rows)
+
+    assert summary["stars_total"] == 2
+    assert summary["stars_positive"] == 1
+    assert summary["stars_negative"] == 1
+
+
+def test_select_hard_negative_indices_prefers_high_score_negatives() -> None:
+    rows = [
+        TCERow("1_1", "1", 1, "PC", "train", 10.0, 4.0, 1.0, 1000.0, 12.0),
+        TCERow("2_1", "2", 0, "AFP", "train", 10.0, 4.0, 1.0, 100.0, 2.0),
+        TCERow("3_1", "3", 0, "NTP", "train", 10.0, 4.0, 1.0, 100.0, 2.0),
+        TCERow("4_1", "4", 0, "AFP", "train", 10.0, 4.0, 1.0, 100.0, 2.0),
+        TCERow("5_1", "5", 0, "NTP", "train", 10.0, 4.0, 1.0, 100.0, 2.0),
+    ]
+    scores = np.array([0.95, 0.92, 0.88, 0.30, 0.10], dtype=np.float32)
+
+    selected = select_hard_negative_indices(
+        rows=rows,
+        scores=scores,
+        min_score=0.8,
+        top_fraction=0.25,
+        min_count=1,
+        max_count=2,
+    )
+
+    assert selected == [1, 2]

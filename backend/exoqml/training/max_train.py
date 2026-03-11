@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -18,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as nnf
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from exoqml.transit_features import (
     GLOBAL_VIEW_BINS,
@@ -144,6 +145,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--focal-gamma", type=float, default=2.0)
     parser.add_argument("--global-view-bins", type=int, default=GLOBAL_VIEW_BINS)
     parser.add_argument("--local-view-bins", type=int, default=LOCAL_VIEW_BINS)
+    parser.add_argument("--disable-view-cache", action="store_true")
+    parser.add_argument("--disable-hard-negative-mining", action="store_true")
+    parser.add_argument("--hard-negative-start-epoch", type=int, default=6)
+    parser.add_argument("--hard-negative-refresh-epochs", type=int, default=4)
+    parser.add_argument("--hard-negative-top-fraction", type=float, default=0.15)
+    parser.add_argument("--hard-negative-min-score", type=float, default=0.55)
+    parser.add_argument("--hard-negative-min-count", type=int, default=512)
+    parser.add_argument("--hard-negative-max-count", type=int, default=4096)
+    parser.add_argument("--hard-negative-weight", type=float, default=2.5)
     parser.add_argument("--enable-compile", action="store_true")
     parser.add_argument("--no-resume", action="store_true", help="Disable automatic resume from previous interrupted run")
     parser.add_argument("--skip-ingestion", action="store_true", help="Train only from already ready samples in manifest.csv")
@@ -174,6 +184,13 @@ def atomic_torch_save(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + ".tmp")
     torch.save(payload, temp)
+    temp.replace(path)
+
+
+def atomic_save_npz(path: Path, **arrays: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp.npz")
+    np.savez_compressed(temp, **arrays)
     temp.replace(path)
 
 
@@ -318,6 +335,24 @@ def aggregate_star_labels(rows: list[dict[str, str | int]]) -> tuple[dict[str, i
     return labels, summary
 
 
+def summarize_star_labels(star_labels: dict[str, int]) -> dict[str, int]:
+    positive = int(sum(star_labels.values()))
+    total = len(star_labels)
+    return {
+        "stars_total": total,
+        "stars_positive": positive,
+        "stars_negative": int(total - positive),
+    }
+
+
+def derive_star_labels_from_tce_rows(rows: list[TCERow]) -> dict[str, int]:
+    star_labels: dict[str, int] = {}
+    for row in rows:
+        current = star_labels.get(row.star_id, 0)
+        star_labels[row.star_id] = 1 if row.label_name == "PC" else current
+    return star_labels
+
+
 def split_by_star(star_labels: dict[str, int], seed: int, train_ratio: float, val_ratio: float) -> dict[str, str]:
     rng = np.random.default_rng(seed)
 
@@ -407,25 +442,22 @@ def build_tce_catalog(
         "tces_total": len(rows),
         "tces_positive": int(sum(item.label for item in rows)),
         "tces_negative": int(len(rows) - sum(item.label for item in rows)),
-        "stars_total": len(star_labels),
-        "stars_positive": int(sum(star_labels.values())),
-        "stars_negative": int(len(star_labels) - sum(star_labels.values())),
     }
+    summary.update(summarize_star_labels(star_labels))
     return rows, summary
 
 
 def summarize_tce_rows(rows: list[TCERow]) -> dict[str, int]:
-    return {
+    summary = {
         "raw_pc": sum(1 for row in rows if row.label_name == "PC"),
         "raw_afp": sum(1 for row in rows if row.label_name == "AFP"),
         "raw_ntp": sum(1 for row in rows if row.label_name == "NTP"),
         "tces_total": len(rows),
         "tces_positive": int(sum(row.label for row in rows)),
         "tces_negative": int(len(rows) - sum(row.label for row in rows)),
-        "stars_total": len({row.star_id for row in rows}),
-        "stars_positive": len({row.star_id for row in rows if row.label == 1}),
-        "stars_negative": len({row.star_id for row in rows if row.label == 0}),
     }
+    summary.update(summarize_star_labels(derive_star_labels_from_tce_rows(rows)))
+    return summary
 
 
 def directory_size(path: Path) -> int:
@@ -614,6 +646,89 @@ def load_star_series_cache(rows: dict[str, ManifestRow]) -> dict[str, tuple[np.n
     return cache
 
 
+def build_star_series_signature(row: ManifestRow) -> str:
+    source = Path(row.npz_path)
+    stat = source.stat()
+    raw = f"{row.star_id}|{row.num_points}|{source.name}|{stat.st_size}|{stat.st_mtime_ns}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def resolve_folded_cache_path(
+    cache_dir: Path,
+    row: TCERow,
+    star_signature: str,
+    global_bins: int,
+    local_bins: int,
+) -> Path:
+    raw = (
+        f"{row.tce_id}|{star_signature}|{row.period:.12f}|{row.duration_hours:.12f}|"
+        f"{row.epoch:.12f}|{row.depth_ppm:.6f}|{row.model_snr:.6f}|{global_bins}|{local_bins}"
+    )
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return cache_dir / digest[:2] / f"{digest}.npz"
+
+
+def load_cached_folded_sample(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    if not path.exists():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as payload:
+            global_view = payload["global_view"].astype(np.float32)
+            local_view = payload["local_view"].astype(np.float32)
+            scalar_features = payload["scalar_features"].astype(np.float32)
+            y = payload["y"].astype(np.float32)
+        return global_view, local_view, scalar_features, y
+    except Exception:
+        path.unlink(missing_ok=True)
+        return None
+
+
+def select_hard_negative_indices(
+    rows: list[TCERow],
+    scores: np.ndarray,
+    min_score: float,
+    top_fraction: float,
+    min_count: int,
+    max_count: int,
+) -> list[int]:
+    negatives = [(idx, float(scores[idx])) for idx, row in enumerate(rows) if row.label == 0]
+    if not negatives:
+        return []
+
+    negatives.sort(key=lambda item: item[1], reverse=True)
+    top_count = max(int(len(negatives) * max(top_fraction, 0.0)), int(max(min_count, 0)))
+    if max_count > 0:
+        top_count = min(top_count, max_count)
+    top_count = min(top_count, len(negatives))
+
+    selected: set[int] = {idx for idx, score in negatives if score >= min_score}
+    selected.update(idx for idx, _ in negatives[:top_count])
+
+    if max_count > 0 and len(selected) > max_count:
+        ordered = [idx for idx, _ in negatives if idx in selected]
+        selected = set(ordered[:max_count])
+
+    return [idx for idx, _ in negatives if idx in selected]
+
+
+def build_sample_weights(length: int, hard_negative_indices: list[int], hard_negative_weight: float) -> np.ndarray:
+    weights = np.ones(length, dtype=np.float64)
+    if hard_negative_indices:
+        weights[np.asarray(hard_negative_indices, dtype=np.int64)] = float(max(hard_negative_weight, 1.0))
+    return weights
+
+
+def build_weighted_sampler(sample_weights: np.ndarray, seed: int) -> WeightedRandomSampler:
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(sample_weights, dtype=torch.double),
+        num_samples=int(sample_weights.shape[0]),
+        replacement=True,
+        generator=generator,
+    )
+
+
 class TCEDataset(Dataset):
     def __init__(
         self,
@@ -621,17 +736,23 @@ class TCEDataset(Dataset):
         star_series: dict[str, tuple[np.ndarray, np.ndarray]],
         global_bins: int,
         local_bins: int,
+        folded_cache_dir: Path | None = None,
+        star_signatures: dict[str, str] | None = None,
         preload: bool = True,
     ) -> None:
         self.rows = rows
         self.star_series = star_series
         self.global_bins = global_bins
         self.local_bins = local_bins
+        self.folded_cache_dir = folded_cache_dir
+        self.star_signatures = star_signatures or {}
         self.preload = preload
         self.cached_global: list[np.ndarray] | None = None
         self.cached_local: list[np.ndarray] | None = None
         self.cached_scalar: list[np.ndarray] | None = None
         self.cached_y: list[np.ndarray] | None = None
+        self.cache_hits = 0
+        self.cache_misses = 0
 
         if preload:
             global_cache: list[np.ndarray] = []
@@ -652,7 +773,28 @@ class TCEDataset(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
+    def _cache_path(self, row: TCERow) -> Path | None:
+        if self.folded_cache_dir is None:
+            return None
+        star_signature = self.star_signatures.get(row.star_id)
+        if not star_signature:
+            return None
+        return resolve_folded_cache_path(
+            cache_dir=self.folded_cache_dir,
+            row=row,
+            star_signature=star_signature,
+            global_bins=self.global_bins,
+            local_bins=self.local_bins,
+        )
+
     def _build_sample(self, row: TCERow) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        cache_path = self._cache_path(row)
+        if cache_path is not None:
+            cached = load_cached_folded_sample(cache_path)
+            if cached is not None:
+                self.cache_hits += 1
+                return cached
+
         time_arr, flux_arr = self.star_series[row.star_id]
         global_view, local_view = build_tce_views(
             time=time_arr.astype(np.float64),
@@ -670,6 +812,15 @@ class TCEDataset(Dataset):
             model_snr=row.model_snr,
         )
         y = np.array([row.label], dtype=np.float32)
+        if cache_path is not None:
+            atomic_save_npz(
+                cache_path,
+                global_view=global_view,
+                local_view=local_view,
+                scalar_features=scalar_features,
+                y=y,
+            )
+        self.cache_misses += 1
         return global_view, local_view, scalar_features, y
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -761,15 +912,19 @@ def create_dataloader(
     num_workers: int,
     shuffle: bool,
     device: str,
+    sampler: WeightedRandomSampler | None = None,
 ) -> DataLoader:
     kwargs: dict[str, Any] = {
         "dataset": dataset,
         "batch_size": batch_size,
-        "shuffle": shuffle,
         "num_workers": num_workers,
         "pin_memory": device == "cuda",
         "collate_fn": safe_collate,
     }
+    if sampler is not None:
+        kwargs["sampler"] = sampler
+    else:
+        kwargs["shuffle"] = shuffle
     if num_workers > 0:
         kwargs["persistent_workers"] = True
         kwargs["prefetch_factor"] = 4
@@ -826,6 +981,35 @@ def forward_epoch(
     return mean_loss, y_true, y_score
 
 
+def score_dataset(
+    dataset: TCEDataset,
+    batch_size: int,
+    num_workers: int,
+    model: nn.Module,
+    criterion: nn.Module,
+    device: str,
+    use_amp: bool,
+    scaler: torch.cuda.amp.GradScaler,
+) -> tuple[np.ndarray, np.ndarray]:
+    loader = create_dataloader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=False,
+        device=device,
+    )
+    _, y_true, y_score = forward_epoch(
+        loader,
+        model,
+        criterion,
+        optimizer=None,
+        device=device,
+        use_amp=use_amp,
+        scaler=scaler,
+    )
+    return y_true, y_score
+
+
 def train(
     train_rows: list[TCERow],
     val_rows: list[TCERow],
@@ -841,13 +1025,45 @@ def train(
     star_ids = sorted({row.star_id for row in (train_rows + val_rows + test_rows)})
     star_cache_rows = {star_id: ready_manifest_rows[star_id] for star_id in star_ids}
     star_series = load_star_series_cache(star_cache_rows)
+    star_signatures = {star_id: build_star_series_signature(row) for star_id, row in star_cache_rows.items()}
 
     global_bins = int(args.global_view_bins)
     local_bins = int(args.local_view_bins)
-    train_ds = TCEDataset(train_rows, star_series=star_series, global_bins=global_bins, local_bins=local_bins, preload=True)
-    val_ds = TCEDataset(val_rows, star_series=star_series, global_bins=global_bins, local_bins=local_bins, preload=True)
-    test_ds = TCEDataset(test_rows, star_series=star_series, global_bins=global_bins, local_bins=local_bins, preload=True)
+    folded_cache_dir = None if args.disable_view_cache else (args.dataset_root.resolve() / "folded_cache" / f"g{global_bins}_l{local_bins}")
+    train_ds = TCEDataset(
+        train_rows,
+        star_series=star_series,
+        global_bins=global_bins,
+        local_bins=local_bins,
+        folded_cache_dir=folded_cache_dir,
+        star_signatures=star_signatures,
+        preload=True,
+    )
+    val_ds = TCEDataset(
+        val_rows,
+        star_series=star_series,
+        global_bins=global_bins,
+        local_bins=local_bins,
+        folded_cache_dir=folded_cache_dir,
+        star_signatures=star_signatures,
+        preload=True,
+    )
+    test_ds = TCEDataset(
+        test_rows,
+        star_series=star_series,
+        global_bins=global_bins,
+        local_bins=local_bins,
+        folded_cache_dir=folded_cache_dir,
+        star_signatures=star_signatures,
+        preload=True,
+    )
     model = TransitMultiViewNet(scalar_dim=SCALAR_FEATURE_DIM, base_channels=32, dropout=0.2).to(device)
+
+    print(
+        f"[cache] train hits={train_ds.cache_hits} misses={train_ds.cache_misses} "
+        f"val hits={val_ds.cache_hits} misses={val_ds.cache_misses} "
+        f"test hits={test_ds.cache_hits} misses={test_ds.cache_misses}"
+    )
 
     if args.batch_size > 0:
         batch_size = args.batch_size
@@ -860,7 +1076,6 @@ def train(
             device=device,
         )
 
-    train_loader = create_dataloader(train_ds, batch_size=batch_size, num_workers=num_workers, shuffle=True, device=device)
     val_loader = create_dataloader(val_ds, batch_size=batch_size, num_workers=num_workers, shuffle=False, device=device)
     test_loader = create_dataloader(test_ds, batch_size=batch_size, num_workers=num_workers, shuffle=False, device=device)
 
@@ -883,7 +1098,10 @@ def train(
     best_threshold = 0.5
     patience_counter = 0
     history: list[dict[str, Any]] = []
+    mining_events: list[dict[str, Any]] = []
     start_epoch = 1
+    hard_negative_indices: list[int] = []
+    hard_negative_active = False
 
     best_checkpoint = run_dir / "best_model.pt"
     latest_checkpoint = run_dir / "latest_model.pt"
@@ -901,6 +1119,9 @@ def train(
         best_epoch = int(checkpoint.get("best_epoch", 0))
         best_threshold = float(checkpoint.get("best_threshold", 0.5))
         patience_counter = int(checkpoint.get("patience_counter", 0))
+        hard_negative_indices = list(checkpoint.get("hard_negative_indices", []))
+        hard_negative_active = bool(checkpoint.get("hard_negative_active", False))
+        mining_events = list(checkpoint.get("mining_events", []))
         start_epoch = int(checkpoint.get("epoch", 0)) + 1
         print(f"Resuming training from epoch {start_epoch}")
 
@@ -910,8 +1131,27 @@ def train(
         except Exception:
             pass
 
+    def make_train_loader(epoch_seed: int) -> DataLoader:
+        if hard_negative_active and hard_negative_indices:
+            sample_weights = build_sample_weights(
+                length=len(train_rows),
+                hard_negative_indices=hard_negative_indices,
+                hard_negative_weight=float(args.hard_negative_weight),
+            )
+            sampler = build_weighted_sampler(sample_weights, seed=epoch_seed)
+            return create_dataloader(
+                train_ds,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                shuffle=False,
+                device=device,
+                sampler=sampler,
+            )
+        return create_dataloader(train_ds, batch_size=batch_size, num_workers=num_workers, shuffle=True, device=device)
+
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_start = time.time()
+        train_loader = make_train_loader(epoch_seed=args.seed + epoch)
         train_loss, y_train, score_train = forward_epoch(
             train_loader,
             model,
@@ -962,6 +1202,48 @@ def train(
             f"val_pr_auc={val_metrics_best['pr_auc']:.4f} val_f1={best_f1:.4f} thr={thr:.2f}"
         )
 
+        mining_count = 0
+        mining_threshold = max(float(args.hard_negative_min_score), float(thr))
+        if (
+            not args.disable_hard_negative_mining
+            and epoch >= int(args.hard_negative_start_epoch)
+            and ((epoch - int(args.hard_negative_start_epoch)) % max(1, int(args.hard_negative_refresh_epochs)) == 0)
+        ):
+            _, train_eval_scores = score_dataset(
+                train_ds,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                model=model,
+                criterion=criterion,
+                device=device,
+                use_amp=use_amp,
+                scaler=scaler,
+            )
+            hard_negative_indices = select_hard_negative_indices(
+                rows=train_rows,
+                scores=train_eval_scores,
+                min_score=mining_threshold,
+                top_fraction=float(args.hard_negative_top_fraction),
+                min_count=int(args.hard_negative_min_count),
+                max_count=int(args.hard_negative_max_count),
+            )
+            hard_negative_active = len(hard_negative_indices) > 0
+            mining_count = len(hard_negative_indices)
+            mining_event = {
+                "epoch": epoch,
+                "threshold": mining_threshold,
+                "count": mining_count,
+                "top_fraction": float(args.hard_negative_top_fraction),
+                "weight": float(args.hard_negative_weight),
+            }
+            mining_events.append(mining_event)
+            print(
+                f"[hard-negative] epoch={epoch} selected={mining_count} "
+                f"threshold={mining_threshold:.3f} weight={float(args.hard_negative_weight):.2f}"
+            )
+        epoch_payload["hard_negative_count"] = int(mining_count)
+        epoch_payload["hard_negative_threshold"] = float(mining_threshold)
+
         if metric_key > best_key:
             best_key = metric_key
             best_epoch = epoch
@@ -978,6 +1260,9 @@ def train(
                     "global_bins": global_bins,
                     "local_bins": local_bins,
                     "scalar_dim": SCALAR_FEATURE_DIM,
+                    "view_cache_enabled": folded_cache_dir is not None,
+                    "hard_negative_active": hard_negative_active,
+                    "hard_negative_count": len(hard_negative_indices),
                 },
             )
         else:
@@ -1003,6 +1288,10 @@ def train(
                 "global_bins": global_bins,
                 "local_bins": local_bins,
                 "scalar_dim": SCALAR_FEATURE_DIM,
+                "view_cache_enabled": folded_cache_dir is not None,
+                "hard_negative_active": hard_negative_active,
+                "hard_negative_indices": hard_negative_indices,
+                "mining_events": mining_events,
             },
         )
 
@@ -1013,6 +1302,8 @@ def train(
                 "run_dir": str(run_dir),
                 "epoch": epoch,
                 "best_epoch": best_epoch,
+                "hard_negative_active": hard_negative_active,
+                "hard_negative_count": len(hard_negative_indices),
                 "updated_at": now_iso(),
             },
         )
@@ -1045,6 +1336,19 @@ def train(
         "scalar_dim": SCALAR_FEATURE_DIM,
         "loss_name": args.loss,
         "pos_weight": pos_weight_value,
+        "folded_cache_dir": str(folded_cache_dir) if folded_cache_dir is not None else "",
+        "folded_cache_stats": {
+            "train_hits": train_ds.cache_hits,
+            "train_misses": train_ds.cache_misses,
+            "val_hits": val_ds.cache_hits,
+            "val_misses": val_ds.cache_misses,
+            "test_hits": test_ds.cache_hits,
+            "test_misses": test_ds.cache_misses,
+        },
+        "hard_negative_active": hard_negative_active,
+        "hard_negative_count": len(hard_negative_indices),
+        "hard_negative_weight": float(args.hard_negative_weight),
+        "hard_negative_events": mining_events,
         "best_epoch": best_epoch,
         "best_threshold": best_threshold,
         "test_loss": float(test_loss),
