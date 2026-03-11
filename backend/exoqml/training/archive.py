@@ -44,3 +44,52 @@ def fetch_dr24_tce_labels() -> list[dict[str, str | int]]:
         if label in {"PC", "AFP", "NTP"}:
             result.append({"kepid": kepid, "av_training_set": label})
     return result
+
+
+def fetch_dr24_tce_catalog() -> list[dict[str, Any]]:
+    sql = """
+        select
+            kepid,
+            tce_plnt_num,
+            av_training_set,
+            tce_period,
+            tce_duration,
+            tce_time0bk,
+            tce_depth,
+            tce_model_snr
+        from q1_q17_dr24_tce
+        where av_training_set in ('PC','AFP','NTP')
+    """
+    rows = tap_query(sql)
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            kepid = int(row["kepid"])
+            tce_num = int(row["tce_plnt_num"])
+            label = str(row["av_training_set"]).strip().upper()
+            period = float(row["tce_period"])
+            duration = float(row["tce_duration"])
+            epoch = float(row["tce_time0bk"])
+            depth = float(row["tce_depth"]) if row["tce_depth"] is not None else 0.0
+            model_snr = float(row["tce_model_snr"]) if row["tce_model_snr"] is not None else 0.0
+        except Exception:
+            continue
+
+        if label not in {"PC", "AFP", "NTP"}:
+            continue
+        if period <= 0.0 or duration <= 0.0:
+            continue
+
+        result.append(
+            {
+                "kepid": kepid,
+                "tce_plnt_num": tce_num,
+                "av_training_set": label,
+                "tce_period": period,
+                "tce_duration": duration,
+                "tce_time0bk": epoch,
+                "tce_depth": depth,
+                "tce_model_snr": model_snr,
+            }
+        )
+    return result

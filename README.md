@@ -22,7 +22,7 @@ Projeto montado na raiz `E:\Estrela` com arquitetura recomendada no PRD:
 ## Setup (PowerShell)
 
 ```powershell
-.\scripts\setup.ps1
+.\scripts\setup.cmd
 ```
 
 ## Rodar em dev
@@ -30,13 +30,13 @@ Projeto montado na raiz `E:\Estrela` com arquitetura recomendada no PRD:
 Terminal 1:
 
 ```powershell
-.\scripts\run_backend.ps1
+.\scripts\run_backend.cmd
 ```
 
 Terminal 2:
 
 ```powershell
-.\scripts\run_frontend.ps1
+.\scripts\run_frontend.cmd
 ```
 
 Abra:
@@ -52,24 +52,31 @@ Pipeline de treino com:
 - split por estrela (evita leakage);
 - ajuste automatico de `batch_size`, `num_workers` e device;
 - checkpoints e retomada automatica apos desligamento/queda.
+- instalacao automatica de PyTorch CUDA (`cu128`) quando GPU NVIDIA e detectada.
 
 Executar:
 
 ```powershell
-.\scripts\train_max.ps1 -Epochs 40 -ReserveFreeGb 60 -DiskUtilization 0.9 -Device auto
+.\scripts\train_max.cmd -Epochs 40 -ReserveFreeGb 40 -DiskUtilization 0.95 -Device auto
 ```
 
 Para limitar ingestao em uma rodada piloto:
 
 ```powershell
-.\scripts\train_max.ps1 -MaxStars 800 -Epochs 12
+.\scripts\train_max.cmd -MaxStars 800 -Epochs 12
+```
+
+Para treinar direto com dados ja prontos no `manifest.csv` (sem novo download):
+
+```powershell
+.\scripts\train_max.cmd -SkipIngestion -Epochs 12
 ```
 
 Retomada:
 
 - O progresso fica em `backend/data/train_max/manifest.csv` e `backend/data/train_max/current_run.json`.
 - O treino salva `latest_model.pt` e `best_model.pt` em `backend/data/train_max/runs/<run_id>/`.
-- Ao executar novamente `train_max.ps1`, a retomada e automatica (use `-NoResume` para iniciar um run novo).
+- Ao executar novamente `train_max.cmd`, a retomada e automatica (use `-NoResume` para iniciar um run novo).
 
 ## Variaveis uteis
 

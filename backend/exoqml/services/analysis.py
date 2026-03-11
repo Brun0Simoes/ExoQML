@@ -31,6 +31,7 @@ def run_analysis(db: Session, settings: Settings, request: AnalyzeRequest) -> An
 
     bls_period, bls_peaks_raw = run_bls_baseline(proc_time, proc_flux)
     inference = run_inference(
+        time=proc_time,
         flux=proc_flux,
         bls_peaks=bls_peaks_raw,
         settings=settings,

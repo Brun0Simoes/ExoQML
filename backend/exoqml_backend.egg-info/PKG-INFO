@@ -49,7 +49,7 @@ Optional science stack:
 
 ```powershell
 cd ..
-.\scripts\train_max.ps1 -Epochs 40 -ReserveFreeGb 60 -DiskUtilization 0.9
+.\scripts\train_max.cmd -Epochs 40 -ReserveFreeGb 40 -DiskUtilization 0.95
 ```
 
 Auto-resume artifacts:

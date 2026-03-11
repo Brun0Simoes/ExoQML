@@ -73,3 +73,57 @@ class TransitResNet1D(nn.Module):
         x = self.layer4(x)
         x = self.pool(x)
         return self.head(x)
+
+
+class ViewEncoder1D(nn.Module):
+    def __init__(self, base_channels: int = 32, dropout: float = 0.2) -> None:
+        super().__init__()
+        c = base_channels
+        self.net = nn.Sequential(
+            nn.Conv1d(1, c, kernel_size=7, padding=3, bias=False),
+            nn.BatchNorm1d(c),
+            nn.GELU(),
+            ResidualBlock1D(c, c, stride=1, dropout=dropout),
+            ResidualBlock1D(c, c * 2, stride=2, dropout=dropout),
+            ResidualBlock1D(c * 2, c * 2, stride=1, dropout=dropout),
+            ResidualBlock1D(c * 2, c * 4, stride=2, dropout=dropout),
+            ResidualBlock1D(c * 4, c * 4, stride=1, dropout=dropout),
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+        )
+        self.out_dim = c * 4
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class TransitMultiViewNet(nn.Module):
+    def __init__(self, scalar_dim: int = 4, base_channels: int = 32, dropout: float = 0.2) -> None:
+        super().__init__()
+        self.global_encoder = ViewEncoder1D(base_channels=base_channels, dropout=dropout)
+        self.local_encoder = ViewEncoder1D(base_channels=base_channels, dropout=dropout)
+        hidden = base_channels * 4
+        self.scalar_head = nn.Sequential(
+            nn.Linear(scalar_dim, hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden),
+            nn.GELU(),
+        )
+        fusion_dim = (self.global_encoder.out_dim * 2) + hidden
+        self.head = nn.Sequential(
+            nn.Linear(fusion_dim, hidden * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden * 2, hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, global_view: torch.Tensor, local_view: torch.Tensor, scalar_features: torch.Tensor) -> torch.Tensor:
+        global_feat = self.global_encoder(global_view)
+        local_feat = self.local_encoder(local_view)
+        scalar_feat = self.scalar_head(scalar_features)
+        fused = torch.cat([global_feat, local_feat, scalar_feat], dim=1)
+        return self.head(fused)
