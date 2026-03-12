@@ -11,11 +11,15 @@ from sqlalchemy.orm import Session
 
 from exoqml.config import Settings, get_settings
 from exoqml.db import get_db
+from exoqml.errors import AnalysisError
+from exoqml.logging_utils import get_logger
 from exoqml.models import AnalysisLog
-from exoqml.schemas import AnalysisHistoryItem, AnalysisResponse, AnalyzeRequest
+from exoqml.schemas import AnalysisHistoryItem, AnalysisResponse, AnalyzeRequest, TargetCatalogItem
 from exoqml.services.analysis import run_analysis
+from exoqml.services.target_catalog import load_target_catalog
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 @router.get("/health")
@@ -35,10 +39,74 @@ def analyze(
 ) -> AnalysisResponse:
     try:
         return run_analysis(db=db, settings=settings, request=request)
+    except AnalysisError as exc:
+        logger.warning(
+            "analysis request failed",
+            extra=exc.log_context(target_id=request.target_id, target_type=request.target_type or "auto"),
+        )
+        raise HTTPException(status_code=exc.status_code, detail=exc.to_detail()) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.warning(
+            "analysis request rejected",
+            extra={
+                "event": "analysis_failed",
+                "error_code": "invalid_request",
+                "error_stage": "request",
+                "error_message": str(exc),
+                "target_id": request.target_id,
+                "target_type": request.target_type or "auto",
+            },
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_request",
+                "message": str(exc),
+                "stage": "request",
+                "suggestion": "Revise os campos enviados e tente novamente.",
+            },
+        ) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"analysis failed: {exc}") from exc
+        logger.exception(
+            "analysis request crashed",
+            extra={
+                "event": "analysis_failed",
+                "error_code": "analysis_failed",
+                "error_stage": "analysis",
+                "target_id": request.target_id,
+                "target_type": request.target_type or "auto",
+            },
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "analysis_failed",
+                "message": "A análise falhou antes de produzir um resultado utilizável.",
+                "stage": "analysis",
+                "suggestion": "Tente novamente em alguns minutos. Se o erro persistir, teste outro alvo.",
+            },
+        ) from exc
+
+
+@router.get("/targets/catalog", response_model=list[TargetCatalogItem])
+def target_catalog(
+    search: str = Query(default="", max_length=128),
+    limit: int = Query(default=10000, ge=1, le=20000),
+) -> list[TargetCatalogItem]:
+    query = search.strip().lower()
+    items = load_target_catalog()
+    if query:
+        filtered = [
+            item
+            for item in items
+            if query in str(item["query"]).lower()
+            or query in str(item["display_name"]).lower()
+            or query in str(item["summary"]).lower()
+            or query in str(item["mission"]).lower()
+        ]
+    else:
+        filtered = items
+    return [TargetCatalogItem.model_validate(item) for item in filtered[:limit]]
 
 
 @router.get("/history", response_model=list[AnalysisHistoryItem])

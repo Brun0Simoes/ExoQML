@@ -4,9 +4,12 @@ FastAPI backend for ExoQML MVP:
 
 - Target lookup (`TIC`, `KIC`, or name)
 - Light curve acquisition (`lightkurve`, with resilient fallback)
+- Local target cache for faster repeat analyses
 - Standard preprocessing
 - BLS-like classical baseline
 - Classical inference + temporal relevance map
+- Safe checkpoint loading + calibrated score
+- Experimental PennyLane hybrid QML path
 - Analysis history in SQLite
 - JSON/CSV export
 
@@ -47,3 +50,10 @@ Auto-resume artifacts:
 `EXOQML_ALLOW_SYNTHETIC_FALLBACK`
 `EXOQML_MODEL_PATH`
 `EXOQML_DEVICE`
+`EXOQML_LOG_LEVEL`
+
+## Evaluation
+
+- Offline evaluation: `docs/OFFLINE_EVALUATION.md`
+- Operational benchmark: `docs/OPERATIONS_BENCHMARK.md`
+- QML experiment: `docs/QML_EXPERIMENT.md`

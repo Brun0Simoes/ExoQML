@@ -8,6 +8,7 @@ from exoqml.transit_features import (
     SCALAR_FEATURE_DIM,
     build_scalar_features,
     build_tce_views,
+    project_folded_relevance_to_time,
 )
 
 
@@ -122,3 +123,29 @@ def test_select_hard_negative_indices_prefers_high_score_negatives() -> None:
     )
 
     assert selected == [1, 2]
+
+
+def test_project_folded_relevance_to_time_highlights_transit_region() -> None:
+    time = np.linspace(0.0, 20.0, 4096, dtype=np.float64)
+    flux = np.ones_like(time)
+    in_transit = (time % 5.0) < 0.12
+    flux[in_transit] -= 0.015
+
+    global_relevance = np.zeros(GLOBAL_VIEW_BINS, dtype=np.float32)
+    local_relevance = np.zeros(LOCAL_VIEW_BINS, dtype=np.float32)
+    global_relevance[GLOBAL_VIEW_BINS // 2] = 1.0
+    local_relevance[LOCAL_VIEW_BINS // 2] = 1.0
+
+    projected = project_folded_relevance_to_time(
+        time=time,
+        flux=flux,
+        period=5.0,
+        epoch=0.0,
+        duration_hours=2.5,
+        global_relevance=global_relevance,
+        local_relevance=local_relevance,
+    )
+
+    assert projected.shape == flux.shape
+    assert np.isfinite(projected).all()
+    assert float(projected[in_transit].mean()) > float(projected[~in_transit].mean())

@@ -15,6 +15,13 @@ frontend/dist/
 *.sqlite
 *.sqlite3
 data/
+output/
+backend/logs/
+frontend/logs/
+.playwright-cli/
+backend/.env
+frontend/tsconfig.tsbuildinfo
+*.log
 
 # Editors / OS
 .DS_Store

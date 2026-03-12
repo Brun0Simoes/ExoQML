@@ -46,6 +46,34 @@ def pr_auc_score_binary(y_true: np.ndarray, y_score: np.ndarray) -> float:
     return float(auc)
 
 
+def brier_score_binary(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    y_true = y_true.astype(np.float64)
+    y_score = y_score.astype(np.float64)
+    return float(np.mean((y_score - y_true) ** 2))
+
+
+def expected_calibration_error_binary(y_true: np.ndarray, y_score: np.ndarray, n_bins: int = 10) -> float:
+    y_true = y_true.astype(np.float64)
+    y_score = y_score.astype(np.float64)
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    total = max(len(y_true), 1)
+
+    for idx in range(n_bins):
+        left = bins[idx]
+        right = bins[idx + 1]
+        if idx == n_bins - 1:
+            mask = (y_score >= left) & (y_score <= right)
+        else:
+            mask = (y_score >= left) & (y_score < right)
+        if not np.any(mask):
+            continue
+        confidence = float(np.mean(y_score[mask]))
+        accuracy = float(np.mean(y_true[mask]))
+        ece += abs(confidence - accuracy) * (np.sum(mask) / total)
+    return float(ece)
+
+
 def binary_metrics(y_true: np.ndarray, y_score: np.ndarray, threshold: float = 0.5) -> dict[str, float]:
     y_true = y_true.astype(np.int64)
     y_pred = (y_score >= threshold).astype(np.int64)
@@ -70,6 +98,8 @@ def binary_metrics(y_true: np.ndarray, y_score: np.ndarray, threshold: float = 0
         "recall": float(recall),
         "specificity": float(specificity),
         "f1": float(f1),
+        "brier": brier_score_binary(y_true, y_score),
+        "ece": expected_calibration_error_binary(y_true, y_score),
         "tp": float(tp),
         "tn": float(tn),
         "fp": float(fp),

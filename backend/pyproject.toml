@@ -21,6 +21,7 @@ dependencies = [
 science = [
   "lightkurve>=2.5,<2.6",
   "torch>=2.6,<3.0",
+  "pennylane>=0.44,<0.45",
   "psutil>=6.1,<6.2",
 ]
 dev = [

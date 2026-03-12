@@ -21,6 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as nnf
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
+from exoqml.checkpoints import ALLOWED_ARCHITECTURES, load_checkpoint
 from exoqml.transit_features import (
     GLOBAL_VIEW_BINS,
     LOCAL_VIEW_BINS,
@@ -1107,7 +1108,13 @@ def train(
     latest_checkpoint = run_dir / "latest_model.pt"
 
     if resume_enabled and latest_checkpoint.exists():
-        checkpoint = torch.load(latest_checkpoint, map_location=device, weights_only=False)
+        checkpoint = load_checkpoint(
+            latest_checkpoint,
+            map_location=device,
+            allowed_architectures=ALLOWED_ARCHITECTURES,
+            require_state_dict=True,
+            require_optimizer=True,
+        )
         model.load_state_dict(checkpoint["state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         if "scheduler" in checkpoint:
@@ -1312,7 +1319,12 @@ def train(
             print(f"Early stopping at epoch {epoch} (patience={args.patience})")
             break
 
-    checkpoint = torch.load(best_checkpoint, map_location=device, weights_only=False)
+    checkpoint = load_checkpoint(
+        best_checkpoint,
+        map_location=device,
+        allowed_architectures=ALLOWED_ARCHITECTURES,
+        require_state_dict=True,
+    )
     model.load_state_dict(checkpoint["state_dict"])
 
     test_loss, y_test, score_test = forward_epoch(
