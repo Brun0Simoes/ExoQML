@@ -330,7 +330,4 @@ O projeto esta em um ponto raro: ele nao e apenas um prototipo visual nem apenas
 - modelos treinados e comparados
 - variante QML que agrega valor de forma objetiva
 
-## Licenca
-
-Defina a licenca desejada antes da publicacao final do repositorio.
 
